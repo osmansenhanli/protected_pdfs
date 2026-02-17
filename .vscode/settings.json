@@ -1,0 +1,22 @@
+{
+    "chat.agent.maxRequests": 50,
+    "chat.tools.terminal.autoApprove": {
+        "/^php -v; php -l \\.\\\\ifun_order_management\\\\include\\\\pdf-drm-implementation\\.php; php -l \\.\\\\pdf-reader\\\\l\\.php$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "Get-Command": true,
+        "/^php -l \\.\\\\ifun_order_management\\\\include\\\\pdf-drm-implementation\\.php$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^php -l \\.\\\\pdf-reader\\\\l\\.php$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^php -l \\.\\\\ifun_order_management\\\\include\\\\pdf-drm-implementation\\.php; php -l \\.\\\\pdf-reader\\\\l\\.php$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}
