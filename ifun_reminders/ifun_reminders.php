@@ -332,8 +332,12 @@ class IFUN_Reminders {
         }
 
         $headers = ['Content-Type: text/html; charset=UTF-8'];
+        $signature_user_email = '';
+        if (!empty($payload['signature_user_email'])) {
+            $signature_user_email = sanitize_email((string) $payload['signature_user_email']);
+        }
 
-        $sent = self::deliver_mail($job['email'], $template['subject'], $template['body'], $headers);
+        $sent = self::deliver_mail($job['email'], $template['subject'], $template['body'], $headers, $signature_user_email);
         if (is_wp_error($sent)) {
             return $sent;
         }
@@ -342,7 +346,7 @@ class IFUN_Reminders {
             $admin_email = self::admin_copy_email();
             if ($admin_email !== '' && strcasecmp($admin_email, (string) $job['email']) !== 0) {
                 $copy_subject = 'Copy: ' . (string) $template['subject'];
-                $copy = self::deliver_mail($admin_email, $copy_subject, $template['body'], $headers);
+                $copy = self::deliver_mail($admin_email, $copy_subject, $template['body'], $headers, $signature_user_email);
                 if (is_wp_error($copy)) {
                     return new WP_Error('admin_copy_failed', 'Admin copy failed: ' . $copy->get_error_message());
                 }
@@ -352,9 +356,21 @@ class IFUN_Reminders {
         return true;
     }
 
-    private static function deliver_mail($to, $subject, $body, array $headers = []) {
+    private static function deliver_mail($to, $subject, $body, array $headers = [], $signature_user_email = '') {
         if (function_exists('ifun_send_mail')) {
-            $sent = ifun_send_mail($to, $subject, $body, $headers);
+            $can_pass_user_email = false;
+            try {
+                $fn = new ReflectionFunction('ifun_send_mail');
+                $can_pass_user_email = $fn->getNumberOfParameters() >= 5;
+            } catch (Exception $e) {
+                $can_pass_user_email = false;
+            }
+
+            if ($can_pass_user_email) {
+                $sent = ifun_send_mail($to, $subject, $body, $headers, $signature_user_email);
+            } else {
+                $sent = ifun_send_mail($to, $subject, $body, $headers);
+            }
             if ($sent === true || $sent === 1) {
                 return true;
             }
