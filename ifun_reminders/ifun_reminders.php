@@ -128,12 +128,17 @@ class IFUN_Reminders {
             return new WP_Error('invalid_email', 'Invalid email address.');
         }
 
-        $timezone = self::normalize_timezone($timezone);
-        if (!$timezone) {
+        $source_timezone = self::normalize_timezone($timezone);
+        if (!$source_timezone) {
             return new WP_Error('invalid_timezone', 'Invalid timezone.');
         }
 
-        $send_at_utc = self::to_utc_datetime($send_at_local, $timezone);
+        $recipient_timezone = self::resolve_user_timezone($email);
+        if (!$recipient_timezone) {
+            $recipient_timezone = $source_timezone;
+        }
+
+        $send_at_utc = self::to_utc_datetime($send_at_local, $source_timezone, $recipient_timezone);
         if (!$send_at_utc) {
             return new WP_Error('invalid_send_at', 'Invalid send date/time.');
         }
@@ -156,7 +161,7 @@ class IFUN_Reminders {
                 'updated_at'       => $now,
                 'email'            => $email,
                 'send_at_utc'      => $send_at_utc,
-                'timezone'         => $timezone,
+                'timezone'         => $recipient_timezone,
                 'template_key'     => $template_key,
                 'payload'          => $payload_json,
                 'idempotency_key'  => $idempotency_key,
@@ -265,6 +270,9 @@ class IFUN_Reminders {
                     $next_send_at = gmdate('Y-m-d H:i:s', time() + DAY_IN_SECONDS);
                 }
 
+                // Ensure next send falls on a business day in the job's timezone
+                $next_send_at = self::ensure_business_day_utc_for_timezone($next_send_at, $job['timezone']);
+
                 $wpdb->update(
                     $table,
                     [
@@ -287,6 +295,10 @@ class IFUN_Reminders {
             $next_send_at = $maxed_out
                 ? $job['send_at_utc']
                 : gmdate('Y-m-d H:i:s', time() + self::retry_delay_seconds($attempts));
+
+            if (!$maxed_out) {
+                $next_send_at = self::ensure_business_day_utc_for_timezone($next_send_at, $job['timezone']);
+            }
 
             $error_message = is_wp_error($result)
                 ? $result->get_error_message()
@@ -458,14 +470,92 @@ class IFUN_Reminders {
         }
     }
 
-    private static function to_utc_datetime($send_at_local, $timezone) {
+    private static function to_utc_datetime($send_at_local, $source_timezone, $recipient_timezone) {
         try {
-            $dt = new DateTime((string) $send_at_local, new DateTimeZone($timezone));
+            $source_tz = new DateTimeZone($source_timezone);
+            $recipient_tz = new DateTimeZone($recipient_timezone);
+
+            // Parse the incoming value in source/system timezone.
+            $dt_source = new DateTime((string) $send_at_local, $source_tz);
+
+            // Reinterpret that local wall-clock time in recipient timezone.
+            $dt = new DateTime($dt_source->format('Y-m-d H:i:s'), $recipient_tz);
+
+            // If the requested local date is Saturday(6) or Sunday(7), move to Monday
+            $dow = (int) $dt->format('N'); // 1 (Mon) - 7 (Sun)
+            if ($dow === 6) {
+                $dt->modify('+2 days');
+            } elseif ($dow === 7) {
+                $dt->modify('+1 day');
+            }
+
             $dt->setTimezone(new DateTimeZone('UTC'));
             return $dt->format('Y-m-d H:i:s');
         } catch (Exception $e) {
             return null;
         }
+    }
+
+    private static function resolve_user_timezone($email) {
+        $email = sanitize_email((string) $email);
+        if (!is_email($email)) {
+            return null;
+        }
+
+        $user = get_user_by('email', $email);
+        if (!$user) {
+            return null;
+        }
+
+        $candidate = trim((string) get_user_meta((int) $user->ID, 'timezone_string', true));
+        if ($candidate === '') {
+            return null;
+        }
+
+        try {
+            new DateTimeZone($candidate);
+            return $candidate;
+        } catch (Exception $e) {
+            return null;
+        }
+    }
+
+    /**
+     * Ensure a UTC datetime falls on a business day in the given timezone.
+     * If it falls on a weekend in that timezone, advance to the following business day
+     * preserving the local time-of-day, then return the resulting UTC datetime string.
+     */
+    private static function ensure_business_day_utc_for_timezone($utc_datetime, $timezone) {
+        if (!is_string($utc_datetime) || $utc_datetime === '') {
+            return $utc_datetime;
+        }
+
+        try {
+            $dt_utc = new DateTime($utc_datetime, new DateTimeZone('UTC'));
+        } catch (Exception $e) {
+            return $utc_datetime;
+        }
+
+        try {
+            $tz = new DateTimeZone($timezone ?: 'UTC');
+        } catch (Exception $e) {
+            $tz = new DateTimeZone('UTC');
+        }
+
+        // Convert to local tz to check day-of-week and adjust if needed
+        $dt_local = clone $dt_utc;
+        $dt_local->setTimezone($tz);
+
+        $dow = (int) $dt_local->format('N');
+        if ($dow === 6) {
+            $dt_local->modify('+2 days');
+        } elseif ($dow === 7) {
+            $dt_local->modify('+1 day');
+        }
+
+        // Convert back to UTC preserving the (possibly updated) local time
+        $dt_local->setTimezone(new DateTimeZone('UTC'));
+        return $dt_local->format('Y-m-d H:i:s');
     }
 
     private static function idempotency_key($email, $send_at_utc, $template_key, $payload_json) {
